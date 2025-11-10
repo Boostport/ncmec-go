@@ -1,4 +1,5 @@
 # NCMEC Go
+[![Go Reference](https://pkg.go.dev/badge/github.com/Boostport/ncmec-go.svg)](https://pkg.go.dev/github.com/Boostport/ncmec-go)
 [![Tests](https://github.com/Boostport/ncmec-go/actions/workflows/tests.yml/badge.svg)](https://github.com/Boostport/ncmec-go/actions/workflows/tests.yml)
 [![Code Coverage](https://qlty.sh/gh/Boostport/projects/ncmec-go/coverage.svg)](https://qlty.sh/gh/Boostport/projects/ncmec-go)
 
