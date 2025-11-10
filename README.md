@@ -1,4 +1,7 @@
 # NCMEC Go
+[![Tests](https://github.com/Boostport/ncmec-go/actions/workflows/tests.yml/badge.svg)](https://github.com/Boostport/ncmec-go/actions/workflows/tests.yml)
+[![Code Coverage](https://qlty.sh/gh/Boostport/projects/ncmec-go/coverage.svg)](https://qlty.sh/gh/Boostport/projects/ncmec-go)
+
 Go SDKs for interacting with the National Center for Missing & Exploited Children (NCMEC)'s public APIs.
 
 Available SDKs:
