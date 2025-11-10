@@ -1,0 +1,462 @@
+package main
+
+import (
+	"fmt"
+	"go/format"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"regexp"
+	"strings"
+
+	"github.com/beevik/etree"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
+)
+
+var constNameRegex = regexp.MustCompile("[^a-zA-Z0-9]+")
+
+type structField struct {
+	Name    string
+	Type    string
+	XMLTag  string
+	Comment string
+}
+
+type structType struct {
+	Name    string
+	XMLName string
+	Fields  []structField
+	Comment string
+}
+
+type scalarType struct {
+	Name      string
+	Type      string
+	Comment   string
+	Constants []constant
+}
+
+type constant struct {
+	Name    string
+	Value   string
+	Comment string
+}
+
+func main() {
+	cyberTiplineUsername := os.Getenv("CYBER_TIPLINE_USERNAME")
+	cyberTiplinePassword := os.Getenv("CYBER_TIPLINE_PASSWORD")
+
+	if cyberTiplineUsername == "" || cyberTiplinePassword == "" {
+		log.Println("Skipping download of cyber_tipline.xsd; CYBER_TIPLINE_USERNAME or CYBER_TIPLINE_PASSWORD environment variable not set")
+	} else {
+		log.Println("Downloading cyber_tipline.xsd...")
+
+		httpClient := &http.Client{}
+		req, err := http.NewRequest("GET", "https://report.cybertip.org/ispws/xsd", nil)
+		if err != nil {
+			log.Fatalf("Error creating request to download cyber_tipline.xsd: %s", err)
+		}
+		req.SetBasicAuth(cyberTiplineUsername, cyberTiplinePassword)
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			log.Fatalf("Error downloading cyber_tipline.xsd: %s", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			log.Fatalf("Error downloading cyber_tipline.xsd: received status code %d", resp.StatusCode)
+		}
+
+		xsdContents, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.Fatalf("Error reading response body: %s", err)
+		}
+
+		err = os.WriteFile("generate/cyber_tipline.xsd", xsdContents, 0644)
+		if err != nil {
+			log.Fatalf("Error writing cyber_tipline.xsd to file: %s", err)
+		}
+	}
+
+	doc := etree.NewDocument()
+	if err := doc.ReadFromFile("generate/cyber_tipline.xsd"); err != nil {
+		log.Fatalf("Error reading cyber_tipline.xsd: %s", err)
+	}
+
+	var (
+		structTypes []structType
+		scalarTypes []scalarType
+	)
+
+	root := doc.SelectElement("schema")
+
+	for element := range root.SelectElementsSeq("element") {
+		structTypes = append(structTypes, createStructTypes(element)...)
+	}
+
+	for complexType := range root.SelectElementsSeq("complexType") {
+		structTypes = append(structTypes, createStructTypes(complexType)...)
+	}
+
+	for simpleType := range root.SelectElementsSeq("simpleType") {
+		scalarTypes = append(scalarTypes, createScalarTypes(simpleType))
+	}
+
+	// Flatten struct types with only 1 chardata field
+	structTypesToFlatten := map[string]string{}
+	var structTypesToKeep []structType
+
+	for i, st := range structTypes {
+		if len(st.Fields) == 1 && st.Fields[0].XMLTag == ",chardata" {
+			structTypesToFlatten[st.Name] = strings.TrimPrefix(st.Fields[0].Type, "*")
+		} else {
+			structTypesToKeep = append(structTypesToKeep, structTypes[i])
+		}
+	}
+
+	// Flatten scalar types with no constants
+	scalarTypesToFlatten := map[string]string{}
+	var scalarTypesToKeep []scalarType
+
+	for i, st := range scalarTypes {
+		if len(st.Constants) == 0 {
+			scalarTypesToFlatten[st.Name] = strings.TrimPrefix(st.Type, "*")
+		} else {
+			scalarTypesToKeep = append(scalarTypesToKeep, scalarTypes[i])
+		}
+	}
+
+	for i, structType := range structTypesToKeep {
+		for j, field := range structType.Fields {
+			ft := field.Type
+			prefix := ""
+			if strings.HasPrefix(field.Type, "*") {
+				ft = strings.TrimPrefix(field.Type, "*")
+				prefix = "*"
+			} else if strings.HasPrefix(field.Type, "[]") {
+				ft = strings.TrimPrefix(field.Type, "[]")
+				prefix = "[]"
+			}
+
+			if newType, ok := structTypesToFlatten[ft]; ok {
+				structTypesToKeep[i].Fields[j].Type = prefix + newType
+			} else if newType, ok := scalarTypesToFlatten[ft]; ok {
+				structTypesToKeep[i].Fields[j].Type = prefix + newType
+			}
+
+		}
+	}
+
+	// Constant types should not be pointer
+	for i, structType := range structTypesToKeep {
+		for j, field := range structType.Fields {
+			if strings.HasPrefix(field.Type, "*") {
+				ft := strings.TrimPrefix(field.Type, "*")
+				for _, scalarType := range scalarTypesToKeep {
+					if scalarType.Name == ft {
+						structTypesToKeep[i].Fields[j].Type = ft
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// Remove XML names for struct types that are not root elements
+	nonRootElements := map[string]struct{}{}
+
+	for _, st := range structTypesToKeep {
+		for _, field := range st.Fields {
+			ft := field.Type
+			if strings.HasPrefix(ft, "*") {
+				ft = strings.TrimPrefix(ft, "*")
+			} else if strings.HasPrefix(ft, "[]") {
+				ft = strings.TrimPrefix(ft, "[]")
+			}
+			nonRootElements[ft] = struct{}{}
+		}
+	}
+
+	for i, st := range structTypesToKeep {
+		if _, isNonRoot := nonRootElements[st.Name]; isNonRoot {
+			structTypesToKeep[i].XMLName = ""
+		}
+	}
+
+	generated := `// Code generated by https://github.com/Boostport/ncmec-go/cybertipline; DO NOT EDIT.
+package cybertipline
+
+import (
+	"encoding/xml"
+	"time"
+
+	"github.com/Boostport/ncmec-go"
+)
+
+`
+
+	for _, structType := range structTypesToKeep {
+		if structType.Comment != "" {
+			generated += fmt.Sprintf("// %s\n", structType.Comment)
+		}
+		generated += fmt.Sprintf("type %s struct {\n", structType.Name)
+		if structType.XMLName != "" {
+			generated += fmt.Sprintf("\tXMLName xml.Name `xml:\"%s\"`\n", structType.XMLName)
+		}
+		for _, field := range structType.Fields {
+			if field.Comment != "" {
+				generated += fmt.Sprintf("\t// %s\n", field.Comment)
+			}
+			xmlTag := field.XMLTag
+			if !strings.Contains(xmlTag, "chardata") {
+				xmlTag = xmlTag + ",omitempty"
+			}
+			generated += fmt.Sprintf("\t%s %s `xml:\"%s\"`\n", field.Name, field.Type, xmlTag)
+		}
+		generated += "}\n\n"
+	}
+
+	for _, scalarType := range scalarTypesToKeep {
+		if scalarType.Comment != "" {
+			generated += fmt.Sprintf("// %s\n", scalarType.Comment)
+		}
+		generated += fmt.Sprintf("type %s %s\n\n", scalarType.Name, scalarType.Type)
+		if len(scalarType.Constants) > 0 {
+			generated += "const (\n"
+			for _, constant := range scalarType.Constants {
+				if constant.Comment != "" {
+					generated += fmt.Sprintf("\t// %s\n", constant.Comment)
+				}
+				generated += fmt.Sprintf("\t%s %s = \"%s\"\n", constant.Name, scalarType.Name, constant.Value)
+			}
+			generated += ")\n\n"
+
+			generated += fmt.Sprintf("func (s %s) StringPtr() *string {\n", scalarType.Name)
+			generated += fmt.Sprintf("\tstr := string(s)\n")
+			generated += fmt.Sprintf("\treturn &str\n")
+			generated += "}\n\n"
+		}
+	}
+
+	formatted, err := format.Source([]byte(generated))
+
+	if err != nil {
+		log.Fatalf("Error formatting generated source: %s", err)
+	}
+
+	err = os.WriteFile("types.go", formatted, os.ModePerm)
+	if err != nil {
+		log.Fatalf("Error writing generated source to file: %s", err)
+	}
+}
+
+func createStructTypes(element *etree.Element) []structType {
+	var structTypes []structType
+
+	name := element.SelectAttrValue("name", "")
+	s := structType{
+		Name: titleCaseName(name),
+	}
+
+	if element.Tag == "element" {
+		s.XMLName = name
+	}
+
+	if s.Name == "" {
+		if element.Tag == "complexType" {
+			parent := element.Parent()
+			for parent != nil {
+				if name := parent.SelectAttrValue("name", ""); name != "" {
+					s.Name = titleCaseName(name)
+					break
+				}
+				parent = parent.Parent()
+			}
+		}
+	}
+
+	comment := element.FindElement("./annotation[0]/documentation[0]")
+	if comment != nil {
+		s.Comment = comment.Text()
+	}
+	sequenceFields := element.FindElements(".//sequence/*")
+	allFields := element.FindElements(".//all/*")
+	attributeFields := element.FindElements(".//attribute")
+	choiceFields := element.FindElements("./complexType/choice/*")
+
+	fields := append(sequenceFields, allFields...)
+	fields = append(fields, attributeFields...)
+	fields = append(fields, choiceFields...)
+
+	for _, field := range fields {
+		s.Fields = append(s.Fields, createStructField(element, field)...)
+
+		nestedType := field.FindElement("complexType")
+		if nestedType != nil {
+			structTypes = append(structTypes, createStructTypes(nestedType)...)
+		}
+	}
+
+	simpleContent := element.FindElement(".//simpleContent")
+	if simpleContent != nil {
+		parent := simpleContent.Parent()
+		for parent != nil && parent.Tag != "complexType" {
+			parent = parent.Parent()
+		}
+		if parent == element {
+			extension := simpleContent.FindElement("extension")
+			if extension != nil {
+				sField := structField{}
+				sField.Type = "*" + xsdTypeToGoType(extension.SelectAttrValue("base", ""))
+				sField.XMLTag = ",chardata"
+				sField.Name = "Value"
+				s.Fields = append([]structField{sField}, s.Fields...)
+			}
+		}
+	}
+
+	structTypes = append(structTypes, s)
+
+	return structTypes
+}
+
+func createStructField(element *etree.Element, field *etree.Element) []structField {
+	var structFields []structField
+
+	// Ignore attributes for nested complex types
+	if field.Tag == "attribute" {
+		parent := field.Parent()
+		for parent != nil && parent.Tag != "complexType" {
+			parent = parent.Parent()
+		}
+		if parent != element {
+			return structFields
+		}
+	}
+
+	if field.Tag == "choice" {
+		choices := field.FindElements("./element")
+		for _, choice := range choices {
+			nestedFields := createStructField(element, choice)
+			structFields = append(structFields, nestedFields...)
+		}
+		return structFields
+	}
+
+	sField := structField{}
+
+	sField.XMLTag = field.SelectAttrValue("name", "")
+
+	sField.Name = titleCaseName(sField.XMLTag)
+	if sField.Name == "" {
+		sField.XMLTag = field.SelectAttrValue("ref", "")
+		sField.Name = titleCaseName(sField.XMLTag)
+	}
+
+	if field.Tag == "attribute" {
+		sField.XMLTag = sField.XMLTag + ",attr"
+	}
+
+	sField.Type = xsdTypeToGoType(field.SelectAttrValue("type", ""))
+	if sField.Type == "" {
+		sField.Type = xsdTypeToGoType(field.SelectAttrValue("ref", ""))
+	}
+	if sField.Type == "" {
+		sField.Type = sField.Name
+	}
+
+	if field.SelectAttrValue("maxOccurs", "") == "unbounded" && sField.Type != "PersonOrUserReported" {
+		sField.Type = "[]" + sField.Type
+	} else {
+		sField.Type = "*" + sField.Type
+	}
+
+	comment := field.FindElement("./annotation[0]/documentation[0]")
+	if comment != nil {
+		sField.Comment = comment.Text()
+	}
+
+	structFields = append(structFields, sField)
+
+	return structFields
+}
+
+func xsdTypeToGoType(xsdType string) string {
+	switch xsdType {
+	case "xs:string", "xs:token":
+		return "string"
+
+	case "xs:boolean":
+		return "bool"
+
+	case "xs:date":
+		return "ncmec.Date"
+
+	case "xs:dateTime":
+		return "time.Time"
+
+	case "xs:double":
+		return "float64"
+
+	case "xs:int":
+		return "int"
+
+	case "xs:long":
+		return "int64"
+
+	default:
+		return titleCaseName(xsdType)
+	}
+}
+
+func createScalarTypes(element *etree.Element) scalarType {
+	s := scalarType{
+		Name: titleCaseName(element.SelectAttrValue("name", "")),
+	}
+
+	restriction := element.FindElement(".//restriction")
+	s.Type = xsdTypeToGoType(restriction.SelectAttrValue("base", ""))
+
+	comment := element.FindElement("./annotation[0]/documentation[0]")
+	if comment != nil {
+		s.Comment = comment.Text()
+	}
+
+	for _, enum := range restriction.FindElements("enumeration") {
+		c := constant{}
+		c.Value = enum.SelectAttrValue("value", "")
+		nameValue := normalizeConstantName(c.Value)
+		if nameValue == "" {
+			nameValue = "Unknown"
+		}
+		c.Name = fmt.Sprintf("%s%s", s.Name, nameValue)
+
+		comment := enum.FindElement("./annotation[0]/documentation[0]")
+		if comment != nil {
+			c.Comment = comment.Text()
+		}
+
+		s.Constants = append(s.Constants, c)
+	}
+
+	return s
+}
+
+func titleCaseName(name string) string {
+	return cases.Title(language.English, cases.NoLower).String(name)
+}
+
+func normalizeConstantName(name string) string {
+	// Special cases
+	switch name {
+	case "HASH":
+		return "Hash"
+	case "VIRAL_POTENTIAL_MEME":
+		return "ViralPotentialMeme"
+	}
+
+	return constNameRegex.ReplaceAllString(titleCaseName(name), "")
+}
