@@ -18,6 +18,7 @@ Here is a complete example of reporting an incident to the Cyber Tipline:
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"time"
@@ -42,7 +43,7 @@ func main() {
 		},
 	}
 
-	reportID, err := client.Submit(report)
+	reportID, err := client.Submit(context.Background(), report)
 	if err != nil {
 		log.Fatalf("Failed to submit report: %s", err)
 	}
@@ -59,7 +60,7 @@ func main() {
 	}
 	defer image.Close()
 
-	fileID, err := client.Upload(reportID, "some-image.jpg", image)
+	fileID, err := client.Upload(context.Background(), reportID, "some-image.jpg", image)
 	if err != nil {
 		log.Fatalf("Failed to upload file: %s", err)
 	}
@@ -71,24 +72,24 @@ func main() {
 		OriginalFileName: ncmec.String("original-image.jpg"),
 	}
 
-	err = client.FileInfo(fileDetails)
+	err = client.FileInfo(context.Background(), fileDetails)
 	if err != nil {
 		log.Fatalf("Failed to submit file details: %s", err)
 	}
-	
+
 	retractReport := false // Change to true to retract the report instead of finishing it
 
 	if retractReport {
-        err = client.Retract(reportID)
-        if err != nil {
-            log.Fatalf("Failed to retract report: %s", err)
-        }
-    }else {
-		err = client.Finish(reportID)
+		err = client.Retract(context.Background(), reportID)
+		if err != nil {
+			log.Fatalf("Failed to retract report: %s", err)
+		}
+	} else {
+		err = client.Finish(context.Background(), reportID)
 		if err != nil {
 			log.Fatalf("Failed to finish report: %s", err)
 		}
-    }
+	}
 }
 ```
 
