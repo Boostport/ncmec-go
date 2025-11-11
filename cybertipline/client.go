@@ -4,6 +4,7 @@ package cybertipline
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -69,13 +70,13 @@ func NewClient(username string, password string, environment Environment, option
 	return client
 }
 
-func (c *Client) Submit(report Report) (int64, error) {
+func (c *Client) Submit(ctx context.Context, report Report) (int64, error) {
 	reportXML, err := xml.Marshal(report)
 	if err != nil {
 		return 0, fmt.Errorf("error mashaling report to XML: %w", err)
 	}
 
-	resp, err := c.post("/submit", "text/xml; charset=utf-8", bytes.NewReader(reportXML))
+	resp, err := c.post(ctx, "/submit", "text/xml; charset=utf-8", bytes.NewReader(reportXML))
 	if err != nil {
 		return 0, fmt.Errorf("error submitting report: %w", err)
 	}
@@ -97,7 +98,7 @@ func (c *Client) Submit(report Report) (int64, error) {
 	return *reportResponse.ReportId, nil
 }
 
-func (c *Client) Upload(reportId int64, filename string, data io.Reader) (string, error) {
+func (c *Client) Upload(ctx context.Context, reportId int64, filename string, data io.Reader) (string, error) {
 	buf := bytes.NewBuffer(nil)
 	w := multipart.NewWriter(buf)
 
@@ -121,7 +122,7 @@ func (c *Client) Upload(reportId int64, filename string, data io.Reader) (string
 		return "", fmt.Errorf("error closing multipart writer: %w", err)
 	}
 
-	resp, err := c.post("/upload", w.FormDataContentType(), buf)
+	resp, err := c.post(ctx, "/upload", w.FormDataContentType(), buf)
 	if err != nil {
 		return "", fmt.Errorf("error uploading file: %w", err)
 	}
@@ -143,13 +144,13 @@ func (c *Client) Upload(reportId int64, filename string, data io.Reader) (string
 	return *reportResponse.FileId, nil
 }
 
-func (c *Client) FileInfo(details FileDetails) error {
+func (c *Client) FileInfo(ctx context.Context, details FileDetails) error {
 	fileInfoXML, err := xml.Marshal(details)
 	if err != nil {
 		return fmt.Errorf("error marshaling file details to XML: %w", err)
 	}
 
-	resp, err := c.post("/fileinfo", "text/xml; charset=utf-8", bytes.NewReader(fileInfoXML))
+	resp, err := c.post(ctx, "/fileinfo", "text/xml; charset=utf-8", bytes.NewReader(fileInfoXML))
 	if err != nil {
 		return fmt.Errorf("error sending file info: %w", err)
 	}
@@ -171,11 +172,11 @@ func (c *Client) FileInfo(details FileDetails) error {
 	return nil
 }
 
-func (c *Client) Finish(reportId int64) error {
+func (c *Client) Finish(ctx context.Context, reportId int64) error {
 	form := url.Values{}
 	form.Set("id", strconv.FormatInt(int64(reportId), 10))
 
-	resp, err := c.post("/finish", "application/x-www-form-urlencoded", bytes.NewBufferString(form.Encode()))
+	resp, err := c.post(ctx, "/finish", "application/x-www-form-urlencoded", bytes.NewBufferString(form.Encode()))
 	if err != nil {
 		return fmt.Errorf("error finishing report: %w", err)
 	}
@@ -197,11 +198,11 @@ func (c *Client) Finish(reportId int64) error {
 	return nil
 }
 
-func (c *Client) Retract(reportId int64) error {
+func (c *Client) Retract(ctx context.Context, reportId int64) error {
 	form := url.Values{}
 	form.Set("id", strconv.FormatInt(int64(reportId), 10))
 
-	resp, err := c.post("/retract", "application/x-www-form-urlencoded", bytes.NewBufferString(form.Encode()))
+	resp, err := c.post(ctx, "/retract", "application/x-www-form-urlencoded", bytes.NewBufferString(form.Encode()))
 	if err != nil {
 		return fmt.Errorf("error retracting report: %w", err)
 	}
@@ -219,8 +220,8 @@ func (c *Client) Retract(reportId int64) error {
 	return nil
 }
 
-func (c *Client) post(path string, contentType string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequest("POST", string(c.environment)+path, body)
+func (c *Client) post(ctx context.Context, path string, contentType string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, "POST", string(c.environment)+path, body)
 	if err != nil {
 		return nil, fmt.Errorf("error creating request: %w", err)
 	}

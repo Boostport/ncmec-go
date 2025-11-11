@@ -1,6 +1,7 @@
 package cybertipline
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1759,12 +1760,12 @@ func TestRetractReport(t *testing.T) {
 		},
 	}
 
-	reportID, err := client.Submit(report)
+	reportID, err := client.Submit(context.Background(), report)
 	if err != nil {
 		t.Fatalf("Failed to submit report: %v", err)
 	}
 
-	err = client.Retract(reportID)
+	err = client.Retract(context.Background(), reportID)
 	if err != nil {
 		t.Fatalf("Failed to retract report: %v", err)
 	}
@@ -1775,7 +1776,7 @@ func testClient(t *testing.T, report Report, files []testFile) {
 
 	client := NewClient(username, password, Testing)
 
-	reportID, err := client.Submit(report)
+	reportID, err := client.Submit(context.Background(), report)
 	if err != nil {
 		t.Fatalf("Failed to submit report: %v", err)
 	}
@@ -1788,7 +1789,7 @@ func testClient(t *testing.T, report Report, files []testFile) {
 			}
 			defer image.Close()
 
-			fileID, err := client.Upload(reportID, filepath.Base(file.path), image)
+			fileID, err := client.Upload(context.Background(), reportID, filepath.Base(file.path), image)
 			if err != nil {
 				t.Fatalf("Failed to upload file: %v", err)
 			}
@@ -1797,7 +1798,7 @@ func testClient(t *testing.T, report Report, files []testFile) {
 			fileDetails.ReportId = ncmec.Int64(reportID)
 			fileDetails.FileId = ncmec.String(fileID)
 
-			err = client.FileInfo(fileDetails)
+			err = client.FileInfo(context.Background(), fileDetails)
 			if err != nil {
 				t.Fatalf("Failed to submit file info: %v", err)
 			}
@@ -1805,7 +1806,7 @@ func testClient(t *testing.T, report Report, files []testFile) {
 		}(file)
 	}
 
-	err = client.Finish(reportID)
+	err = client.Finish(context.Background(), reportID)
 	if err != nil {
 		t.Fatalf("Failed to finish report: %v", err)
 	}
@@ -1832,13 +1833,13 @@ func submitPriorReports(t *testing.T, numReports int) []int64 {
 	}
 
 	for i := 0; i < numReports; i++ {
-		reportID, err := client.Submit(report)
+		reportID, err := client.Submit(context.Background(), report)
 		if err != nil {
 			t.Fatalf("Failed to submit prior report: %v", err)
 		}
 		priorReportIDs = append(priorReportIDs, reportID)
 
-		err = client.Finish(reportID)
+		err = client.Finish(context.Background(), reportID)
 		if err != nil {
 			t.Fatalf("Failed to finish prior report: %v", err)
 		}
